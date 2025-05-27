@@ -5,7 +5,7 @@ Final project for ESCI 599: App Development
 
 This Shiny app is designed to visualize wildlife sightings in Bellingham, WA. It is very much a work in progress. Ideally, when the app is finished, users will be able to filter sightings to neighborhoods and parks of interest, as well as filter to taxa of interest.
 
-For the app to run correctly, you must download Data.zip and www.zip and extract both of them in the same project folder as Bradford_FinalProject.R
+For the app to run correctly, you must download the "Data" and "www" folders and extract both of them in the same project folder as Bradford_FinalProject.R
 
 A live version of the app can be found here: https://emilybradford.shinyapps.io/FinalProject/
 
