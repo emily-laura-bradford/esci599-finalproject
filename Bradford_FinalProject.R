@@ -1,8 +1,12 @@
 # Emily Bradford
 # ESCI 599: App Development
-# May 27, 2025
+# June 4, 2025
 
 # Assignment: Final Project
+
+# ----------
+
+# Bellingham Urban Wildlife Viewer v1.1.0-beta
 
 # ---------- packages ----------
 
@@ -13,10 +17,13 @@ library(leaflet) # interactive map
 library(tidyverse) # general data analysis, pipes, ggplot, etc.
 library(shinybusy) # busy indicator
 library(leaflet.extras) # heatmap
-library(sf) # for handling shapefiles
+library(sf) # handling shapefiles
 library(shinyWidgets) # tree selector, background image, etc.
 library(reactable) # tables
 library(ggdark) # ggplot themes
+library(RColorBrewer) # palette for map legend
+library(Cairo) # higher-resolution text on plots
+library(plotly) # interactive plots
 
 # ---------- load data ----------
 
@@ -31,9 +38,19 @@ bellingham_outline <- read_sf("Data//Bellingham_Project.shp")
 # shapefile of bellingham neighborhoods
 neighborhoods <- read_sf("Data//Neighborhoods_Project.shp")
 
+# extract neighborhood area in sq km
+# (the number converts sq ft to sq km)
+NeighborhoodArea <- as.data.frame(neighborhoods) %>%
+  select(NEIGHBORHO, Shape_Area) %>%
+  mutate(Area = Shape_Area / 10764000) %>%
+  select(NEIGHBORHO, Area)
+
+# add neighborhood area to wildlifePoints; useful for calculating density later
+wildlifePoints <- merge(wildlifePoints, NeighborhoodArea, by = "NEIGHBORHO", all.x = TRUE)
+
 # shapefile of bellingham parks
 parks <- read_sf("Data//Parks_Project.shp") %>%
-  # removes parks with zero points
+  # removes parks with zero wildlife sightings
   filter(ParkName %in% wildlifePoints$ParkName)
 
 # create tree for tree selection
@@ -48,10 +65,10 @@ tree <- wildlifePoints %>%
             # pretty sure suborder and subfamily break the app for some reason
             # including them here in case i figure out a fix
             # but for now the select only extracts the other taxonomic names
-            suborderName= first(suborderName),
-            familyName = first(familyName),
+            suborderName  = first(suborderName),
+            familyName    = first(familyName),
             subfamilyName = first(subfamilyName),
-            genusName = first(genusName)) %>%
+            genusName     = first(genusName)) %>%
   # drop count, suborder, subfamily
   select(className, orderName, familyName, genusName, commonName) %>%
   create_tree()
@@ -69,8 +86,10 @@ ui <- fluidPage(
   #    to quote todd howard: it just works
   #    (this was not intentional at first, but now it's a feature, not a bug)
   setBackgroundImage(src = "deer.jpg"),
-  # busy indicator. the app takes a second or so to think every time the neighborhood/park is changed
-  add_busy_spinner(spin = "fading-circle"),
+  # busy indicator. the app takes a second or so to think every time the selection is changed
+  # light gray color to stand out from background
+  # also the hex code represents my feelings about everything at the end of the quarter
+  add_busy_spinner(spin = "fading-circle", color = "#aaaaaa"),
   # name and date
   "Author: Emily Bradford",
   br(),
@@ -80,8 +99,12 @@ ui <- fluidPage(
   # header/title
   titlePanel("Bellingham Urban Wildlife Viewer"),
   br(),
-  # allow user to select any combination of neighborhoods and parks
+  # row for various selection inputs
   fluidRow(
+    # ensure that the select input displays above the navbar, not below
+    # (99999 is probably overkill but it just works)
+    tags$style(HTML(".vscomp-dropbox-container  {z-index:99999 !important;}")),
+    # select input: allow user to select any combination of neighborhoods and parks
     column(width = 4,
            virtualSelectInput("RegionSelect", "Select neighborhood or park:",
                               # could also do "unique(wildlifePoints$NEIGHBORHO)
@@ -109,18 +132,68 @@ ui <- fluidPage(
       )
   ),
   # to add: fun facts about various taxa, if i have time to
-  # main layout. may change to navbar eventually if i get ideas for more tabs
-  # one idea is allowing users to compare graphs from multiple neighborhoods
-  # another is to run a quick cluster analysis for neighborhoods
-  #    though i suspect that might not be very interesting since the clusters
-  #    will probably just be "here's coastal neighborhoods. here's lake whatcom and lake padden.
-  #    here's everything else"
+  #    update: i probably don't have time to before the end of the quarter
+  #    but i might add this at some point later as app version 1.1 or something
+  # main layout
   sidebarLayout(
-    # map
+    # map/neighborhood info panel
     mainPanel(
-      # default height is too short; want map to be square-ish
-      leafletOutput("main_map",
-                    height = 750),
+      navbarPage(title = "Display",
+                 # map - default when app is opened
+                 tabPanel("Map",
+                          leafletOutput("main_map",
+                                        # default height is too short; want map to be square-ish
+                                        # and more importantly line up with the sidebar's height
+                                        height = 710)),
+                 # table of count/density of selected taxa by neighborhood
+                 tabPanel("Count of selected taxa by neighborhood",
+                          reactableOutput("neighborhood_count")),
+                 # tab containing two columns to allow comparing two neighborhoods
+                 # each column has one select input, one chart, and one table
+                 tabPanel("Compare neighborhoods",
+                          fluidRow(
+                            column(width = 6,
+                                   # similar to overall neighborhood/park selector
+                                   virtualSelectInput("NeighborhoodSelect1", "Select neighborhood 1:",
+                                                      choices = list(
+                                                        "Neighborhoods" = neighborhoods$NEIGHBORHO
+                                                      ),
+                                                      # only allow selecting a single neighborhood
+                                                      multiple = FALSE,
+                                                      # allow searching
+                                                      search = TRUE)
+                                   ),
+                          column(width = 6,
+                                 # as above but for the second neighborhood
+                                 virtualSelectInput("NeighborhoodSelect2", "Select neighborhood 2:",
+                                                    choices = list(
+                                                      "Neighborhoods" = neighborhoods$NEIGHBORHO
+                                                    ),
+                                                    multiple = FALSE,
+                                                    search = TRUE)
+                                 )
+                          ),
+                          # display one plot per neighborhood
+                          fluidRow(
+                            column(width = 6,
+                                   plotlyOutput("neighborhood_plot1",
+                                              # shorter to make sure everything at least comes close to fitting
+                                              #    into a single page
+                                              # and to make sure the bottom of the table lines up with
+                                              #    the bottom of the sidebar
+                                              height = 335)),
+                            column(width = 6,
+                                   plotlyOutput("neighborhood_plot2",
+                                              height = 335))
+                          ),
+                          # display one table per neighborhood
+                          fluidRow(
+                            column(width = 6,
+                                   reactableOutput("neighborhood_table1")),
+                            column(width = 6,
+                                   reactableOutput("neighborhood_table2"))
+                          )
+                          )),
       # takes up 58% of layout's horizontal space
       width = 7
     ),
@@ -129,7 +202,7 @@ ui <- fluidPage(
       # tree selector using tree generated above
       # i would really like this to be searchable, but i'm not sure that's possible
       # one stopgap solution might be to let users manually search for and select individual species
-      # using a different selector? not sure how that would work
+      #    using a different selector? not sure how that would work
       treeInput("TaxonomySelect", "Select taxa:",
                 choices = tree,
                 # default selection is Every Species
@@ -137,8 +210,14 @@ ui <- fluidPage(
                 # default is to show class only; classes can then be expanded to show orders, etc.
                 closeDepth = 0),
       br(),
+      # allow selecting species or genus
+      "Display species or genus in plots and tables??",
+      prettyToggle("SpeciesGenus",
+                   # species by default, genus if clicked
+                   label_on = "Genus", label_off = "Species"),
       # display plot below tree selector
-      plotOutput("main_plot",
+      plotlyOutput("main_plot",
+                 # significantly shorter to make sure everything at least comes close to fitting in a single page
                  height = 250),
       br(),
       # display table below plot
@@ -148,7 +227,6 @@ ui <- fluidPage(
     )
   ),
   # to add: second page comparing neighborhoods (clustering etc.)
-  # to add: native-or-introduced checkbox thing
   # citations
   "Wildlife sighting data from GBIF, 2025: GBIF.org (12 May 2025) GBIF Occurrence Download https://doi.org/10.15468/dl.a9edgc",
   br(),
@@ -202,6 +280,9 @@ server <- function(input, output, session) {
     13.95 - (15 * (max(selected()$decimalLongitude) - min(selected()$decimalLongitude)))
   )
   
+  # set palette for map legend
+  pal <- brewer.pal(9, "Spectral")
+  
  # define map
  output$main_map <- renderLeaflet({
    # leaflet for interactive map
@@ -217,25 +298,24 @@ server <- function(input, output, session) {
      addPolygons(data = bellingham_outline,
                  # hollow outline of the city
                  fillOpacity = 0,
-                 color = "black",
-                 weight = 1.5) %>%
+                 color       = "black",
+                 weight      = 1.5) %>%
      # neighborhood outlines
      addPolygons(data = neighborhoods,
                  # subtle hollow outlines for non-selected neighborhoods
                  fillOpacity = 0,
-                 color = "black",
-                 weight = 0.5) %>%
+                 color       = "black",
+                 weight      = 0.5) %>%
      addPolygons(data = neighborhoodSelect(),
                  # thick hollow outlines for selected neighborhoods
                  fillOpacity = 0,
-                 color = "black",
-                 weight = 3) %>%
+                 color       = "black",
+                 weight      = 3) %>%
      addPolygons(data = parkSelect(),
                  # thick hollow outlines for selected parks
                  fillOpacity = 0,
-                 color = "black",
-                 weight = 2) %>%
-     # something for selected parks goes here
+                 color       = "black",
+                 weight      = 2) %>%
      # add wildlife observations to map in form of heatmap
      addHeatmap(lng = selected()$decimalLongitude,
                 lat = selected()$decimalLatitude,
@@ -254,12 +334,19 @@ server <- function(input, output, session) {
                 # this produces a warning because the number of points is not evenly divisible
                 #    by 4. that's fine, it doesn't seem to actually matter
                 intensity = c(0, 0.5, 0.75, 1)) %>%
+     # add legend
+     addLegend(colors = pal,
+               # qualitative high-low legend is the only option that makes sense imo
+               labels = c("Low", "", "", "", "", "", "", "", "High"),
+               title  = "Number of observations") %>%
      # zooms in on selected neighborhood(s)/parks
      setView(lng = meanLong(), lat = meanLat(), zoom = zoomLevel())
  })
  
  # render plot
- output$main_plot <- renderPlot(
+ output$main_plot <- renderPlotly(
+   # if user wants to view species
+   if (input$SpeciesGenus == FALSE) {
    selected() %>%
      # group by species, count number of occurrences among selected points only
      group_by(commonName) %>%
@@ -283,11 +370,46 @@ server <- function(input, output, session) {
      + scale_x_continuous(expand = expansion(mult = c(0, 0.1)),
                           labels = scales::comma) %>%
      # change axis text size
-     + theme(axis.text = element_text(size = 12))
+     + theme(axis.text = element_text(size = 10),
+             # ensure legend doesn't show up when converted to plotly object
+             legend.position = "none") %>%
+       # convert to plotly
+       # tooltips only display count
+       ggplotly(tooltip = "count") }
+   # if user wants to view genus
+   # code is pretty much same as previous chart, but with species swaped for genus
+   else {
+     selected() %>%
+       group_by(genusName) %>%
+       summarize(count = n()) %>%
+       arrange(desc(count)) %>%
+       slice_head(n = 5) %>%
+       ggplot(aes(y = reorder(genusName, count), x = count)) %>%
+       + geom_col(aes(fill = genusName)) %>%
+       + scale_fill_brewer(palette = "Set2", guide = "none") %>%
+       + labs(y = "Genus",
+              x = "Count") %>%
+       + dark_theme_gray() %>%
+       + scale_x_continuous(expand = expansion(mult = c(0, 0.1)),
+                            labels = scales::comma) %>%
+       + theme(axis.text = element_text(size = 10),
+               legend.position = "none") %>%
+       ggplotly(tooltip = "count")
+   }
  )
+ 
+ # set table theme
+ tableTheme <- reactableTheme(backgroundColor = "#999999",
+                              # color = text color
+                              color            = "black",
+                              borderColor      = "black",
+                              searchInputStyle = list(backgroundColor = "lightgray",
+                                                      color           = "black"))
  
  # output table generated with reactable
  output$table <- renderReactable(
+   # if user has chosen to display by species
+   if (input$SpeciesGenus == FALSE) {
    selected() %>%
      # group by species, count number of occurrences among selected points only
      group_by(Species = commonName) %>%
@@ -299,11 +421,175 @@ server <- function(input, output, session) {
                # searchable in case someone is curious about a specific species/set of species
                searchable = TRUE,
                # set table colors
-               theme = reactableTheme(backgroundColor = "#999999",
-                                      color = "black",
-                                      borderColor = "black",
-                                      searchInputStyle = list(backgroundColor = "lightgray",
-                                                              color = "black")))
+               theme = tableTheme) }
+   # if user has chosen to display by genus
+   else {
+     # table identical to above, except with genus swapped for species
+     selected() %>%
+       group_by(Genus = genusName) %>%
+       summarize(Count = n()) %>%
+       arrange(desc(Count)) %>%
+       reactable(defaultPageSize = 5,
+                 searchable      = TRUE,
+                 theme           = tableTheme)
+   }
+ )
+ 
+ # count by neighborhood
+ output$neighborhood_count <- renderReactable(
+   selected() %>%
+     group_by(Neighborhood = NEIGHBORHO) %>%
+     summarize(Count = n(),
+               Area  = first(Area)) %>%
+     # calculate density
+     mutate(Density = Count / Area) %>%
+     # drop neighborhood area column
+     select(!Area) %>%
+     # arrange by count by default
+     arrange(desc(Count)) %>%
+     # table formatting
+     reactable(defaultPageSize = 15,
+               searchable      = TRUE,
+               theme           = tableTheme,
+               # rename density column
+               columns = list(Density = colDef(name = "Density (per sq km)")))
+ )
+ 
+ # neighborhood comparison - select only those in neighborhood 1/neighborhood 2
+ selected_n1 <- reactive(
+   wildlifePoints %>%
+     # still filter by taxonomy and native/introduced status
+     filter(commonName %in% input$TaxonomySelect &
+              NEIGHBORHO == input$NeighborhoodSelect1 &
+              introduced %in% input$NativeSelect)
+ )
+ # code as above
+ selected_n2 <- reactive(
+   wildlifePoints %>%
+     filter(commonName %in% input$TaxonomySelect &
+              NEIGHBORHO == input$NeighborhoodSelect2 &
+              introduced %in% input$NativeSelect)
+ )
+ 
+ # render plots - code extremely similar to main plot
+ # this section of the code could be made more efficient via functions eventually, i think
+ output$neighborhood_plot1 <- renderPlotly(
+   if (input$SpeciesGenus == FALSE) {
+     selected_n1() %>%
+       group_by(commonName) %>%
+       summarize(count = n()) %>%
+       arrange(desc(count)) %>%
+       slice_head(n = 5) %>%
+       ggplot(aes(y = reorder(commonName, count), x = count)) %>%
+       + geom_col(aes(fill = commonName)) %>%
+       + scale_fill_brewer(palette = "Set2", guide = "none") %>%
+       + labs(y = "Species",
+              x = "Count") %>%
+       + dark_theme_gray() %>%
+       + scale_x_continuous(expand = expansion(mult = c(0, 0.1)),
+                            labels = scales::comma) %>%
+       + theme(axis.text = element_text(size = 8),
+               legend.position = "none") %>%
+       ggplotly(tooltip = "count")}
+   else {
+     selected_n1() %>%
+       group_by(genusName) %>%
+       summarize(count = n()) %>%
+       arrange(desc(count)) %>%
+       slice_head(n = 5) %>%
+       ggplot(aes(y = reorder(genusName, count), x = count)) %>%
+       + geom_col(aes(fill = genusName)) %>%
+       + scale_fill_brewer(palette = "Set2", guide = "none") %>%
+       + labs(y = "Genus",
+              x = "Count") %>%
+       + dark_theme_gray() %>%
+       + scale_x_continuous(expand = expansion(mult = c(0, 0.1)),
+                            labels = scales::comma) %>%
+       + theme(axis.text = element_text(size = 8),
+               legend.position = "none") %>%
+       ggplotly(tooltip = "count")
+   }
+ )
+ # code as above
+ output$neighborhood_plot2 <- renderPlotly(
+   if (input$SpeciesGenus == FALSE) {
+     selected_n2() %>%
+       group_by(commonName) %>%
+       summarize(count = n()) %>%
+       arrange(desc(count)) %>%
+       slice_head(n = 5) %>%
+       ggplot(aes(y = reorder(commonName, count), x = count)) %>%
+       + geom_col(aes(fill = commonName)) %>%
+       + scale_fill_brewer(palette = "Set2", guide = "none") %>%
+       + labs(y = "Species",
+              x = "Count") %>%
+       + dark_theme_gray() %>%
+       + scale_x_continuous(expand = expansion(mult = c(0, 0.1)),
+                            labels = scales::comma) %>%
+       + theme(axis.text = element_text(size = 8),
+               legend.position = "none") %>%
+       ggplotly(tooltip = "count")
+     }
+   else {
+     selected_n2() %>%
+       group_by(genusName) %>%
+       summarize(count = n()) %>%
+       arrange(desc(count)) %>%
+       slice_head(n = 5) %>%
+       ggplot(aes(y = reorder(genusName, count), x = count)) %>%
+       + geom_col(aes(fill = genusName)) %>%
+       + scale_fill_brewer(palette = "Set2", guide = "none") %>%
+       + labs(y = "Genus",
+              x = "Count") %>%
+       + dark_theme_gray() %>%
+       + scale_x_continuous(expand = expansion(mult = c(0, 0.1)),
+                            labels = scales::comma) %>%
+       + theme(axis.text = element_text(size = 8),
+               legend.position = "none") %>%
+       ggplotly(tooltip = "count")
+   }
+ )
+ 
+ # output tables - very similar to main table
+ # again could probably make this more efficient via functions etc.
+ output$neighborhood_table1 <- renderReactable(
+   if (input$SpeciesGenus == FALSE) {
+     selected_n1() %>%
+       group_by(Species = commonName) %>%
+       summarize(Count = n()) %>%
+       arrange(desc(Count)) %>%
+       reactable(defaultPageSize = 5,
+                 searchable      = TRUE,
+                 theme           = tableTheme) }
+   else {
+     selected_n1() %>%
+       group_by(Genus = genusName) %>%
+       summarize(Count = n()) %>%
+       arrange(desc(Count)) %>%
+       reactable(defaultPageSize = 5,
+                 searchable      = TRUE,
+                 theme           = tableTheme)
+   }
+ )
+ # code as above
+ output$neighborhood_table2 <- renderReactable(
+   if (input$SpeciesGenus == FALSE) {
+     selected_n2() %>%
+       group_by(Species = commonName) %>%
+       summarize(Count = n()) %>%
+       arrange(desc(Count)) %>%
+       reactable(defaultPageSize = 5,
+                 searchable      = TRUE,
+                 theme           = tableTheme) }
+   else {
+     selected_n2() %>%
+       group_by(Genus = genusName) %>%
+       summarize(Count = n()) %>%
+       arrange(desc(Count)) %>%
+       reactable(defaultPageSize = 5,
+                 searchable      = TRUE,
+                 theme           = tableTheme)
+   }
  )
 }
 
